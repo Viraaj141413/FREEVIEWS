@@ -96,6 +96,9 @@
             border: 2px solid #ff2d55;
             border-radius: 8px;
             box-shadow: 0 4px 8px rgba(0, 0, 0, 0.2);
+            display: none;
+        }
+        #browser-view.visible {
             display: block;
         }
         @media (max-width: 600px) {
@@ -175,6 +178,8 @@
 
         socket.on('screenshot', (data) => {
             browserView.src = `data:image/png;base64,${data.image}`;
+            browserView.classList.add('visible');
+            statusDiv.textContent = `Live View: ${data.context}`;
         });
 
         socket.on('connect', () => {
