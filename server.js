@@ -1,7 +1,7 @@
 const express = require('express');
 const { createServer } = require('http');
 const { Server } = require('socket.io');
-const { chromium } = require('playwright');
+const puppeteer = require('puppeteer');
 
 const app = express();
 const server = createServer(app);
@@ -28,382 +28,358 @@ function normalizeUrl(inputUrl) {
     if (!url.startsWith('http')) {
         url = 'https://' + url;
     }
-    if (url.includes('tiktok.com') && !url.match(/tiktok\.com\/@[\w.]+\/video\/\d+$/)) {
-        url = url.replace(/tiktok\.com.*(@[\w.]+\/video\/\d+)/, 'tiktok.com/$1');
+    
+    // Convert various YouTube formats to standard shorts URL
+    if (url.includes('youtube.com') || url.includes('youtu.be')) {
+        // Extract video ID from various formats
+        let videoId = null;
+        
+        if (url.includes('/shorts/')) {
+            videoId = url.match(/\/shorts\/([a-zA-Z0-9_-]+)/)?.[1];
+        } else if (url.includes('youtu.be/')) {
+            videoId = url.match(/youtu\.be\/([a-zA-Z0-9_-]+)/)?.[1];
+        } else if (url.includes('watch?v=')) {
+            videoId = url.match(/watch\?v=([a-zA-Z0-9_-]+)/)?.[1];
+        }
+        
+        if (videoId) {
+            return `https://www.youtube.com/shorts/${videoId}`;
+        }
     }
+    
     return url;
 }
 
-async function customCaptchaBlocker(page, socketId, viewIndex) {
-    const captchaSelectors = [
-        'iframe[src*="captcha"]',
-        'div[class*="recaptcha"]',
-        'div[class*="turnstile"]',
-        'button[class*="verify"]',
-        'input[type="checkbox"][class*="captcha"]',
-        'div[class*="slider"]',
-        'div[class*="captcha-container"]',
-        'iframe[src*="cloudflare"]'
-    ];
+function getRandomDelay(min, max) {
+    return Math.floor(Math.random() * (max - min + 1)) + min;
+}
+
+async function humanLikeScroll(page, direction = 'down') {
+    const scrollAmount = getRandomDelay(100, 400);
+    const steps = getRandomDelay(3, 8);
+    
+    for (let i = 0; i < steps; i++) {
+        await page.evaluate((amount, dir) => {
+            window.scrollBy(0, dir === 'down' ? amount : -amount);
+        }, scrollAmount / steps, direction);
+        await page.waitForTimeout(getRandomDelay(50, 150));
+    }
+}
+
+async function humanLikeMouseMovement(page, viewport) {
+    const startX = getRandomDelay(50, viewport.width - 50);
+    const startY = getRandomDelay(50, viewport.height - 50);
+    const endX = getRandomDelay(50, viewport.width - 50);
+    const endY = getRandomDelay(50, viewport.height - 50);
+    
+    // Move mouse in a curved path
+    const steps = getRandomDelay(10, 20);
+    for (let i = 0; i <= steps; i++) {
+        const progress = i / steps;
+        const x = startX + (endX - startX) * progress + Math.sin(progress * Math.PI) * getRandomDelay(-20, 20);
+        const y = startY + (endY - startY) * progress + Math.cos(progress * Math.PI) * getRandomDelay(-20, 20);
+        
+        await page.mouse.move(x, y);
+        await page.waitForTimeout(getRandomDelay(20, 50));
+    }
+}
+
+async function watchVideo(page, socketId, viewIndex, region) {
     try {
-        for (const selector of captchaSelectors) {
-            const element = await page.$(selector);
-            if (element) {
-                const boundingBox = await element.boundingBox();
-                if (boundingBox) {
-                    await page.mouse.move(
-                        boundingBox.x + boundingBox.width / 2 + Math.random() * 10 - 5,
-                        boundingBox.y + boundingBox.height / 2 + Math.random() * 10 - 5,
-                        { steps: 15 }
-                    );
-                    await page.waitForTimeout(Math.floor(Math.random() * 400 + 200));
-                    if (selector.includes('slider')) {
-                        await page.mouse.down();
-                        await page.mouse.move(
-                            boundingBox.x + boundingBox.width * 1.5 + Math.random() * 20 - 10,
-                            boundingBox.y + boundingBox.height / 2 + Math.random() * 5 - 2.5,
-                            { steps: 25 }
-                        );
-                        await page.mouse.up();
-                    } else {
-                        await element.click({ timeout: 3000 });
-                    }
-                    console.log(`Attempted to block/solve CAPTCHA for view ${viewIndex}`);
-                    io.to(socketId).emit('bot_update', { message: `Attempted to block/solve CAPTCHA for view ${viewIndex}` });
-                    try {
-                        const screenshot = await page.screenshot({ fullPage: false });
-                        io.to(socketId).emit('screenshot', { image: screenshot.toString('base64'), context: `CAPTCHA detected for view ${viewIndex}` });
-                    } catch {}
-                    await page.waitForTimeout(3000);
-                    return true; // Skip view if CAPTCHA detected
-                }
+        // Wait for video to load
+        await page.waitForSelector('video', { timeout: 10000 });
+        
+        // Get video duration
+        const videoDuration = await page.evaluate(() => {
+            const video = document.querySelector('video');
+            return video ? video.duration : 0;
+        });
+        
+        console.log(`Video duration: ${videoDuration}s for view ${viewIndex} from ${region}`);
+        io.to(socketId).emit('bot_update', { message: `Video duration: ${videoDuration}s for view ${viewIndex} from ${region}` });
+        
+        // Watch for a realistic amount of time (30-90% of video or minimum 3 seconds)
+        const watchPercentage = Math.random() * 0.6 + 0.3; // 30-90%
+        const watchTime = Math.max(3000, videoDuration * 1000 * watchPercentage);
+        
+        console.log(`Watching video for ${(watchTime/1000).toFixed(1)}s (${(watchPercentage*100).toFixed(1)}%) for view ${viewIndex} from ${region}`);
+        io.to(socketId).emit('bot_update', { message: `Watching video for ${(watchTime/1000).toFixed(1)}s (${(watchPercentage*100).toFixed(1)}%) for view ${viewIndex} from ${region}` });
+        
+        // Simulate human watching behavior
+        const intervals = Math.floor(watchTime / 2000); // Check every 2 seconds
+        for (let i = 0; i < intervals; i++) {
+            await page.waitForTimeout(2000);
+            
+            // Random human actions during video
+            const action = Math.random();
+            if (action < 0.1) {
+                // 10% chance to pause and resume
+                await page.keyboard.press('Space');
+                await page.waitForTimeout(getRandomDelay(500, 2000));
+                await page.keyboard.press('Space');
+                console.log(`Paused/resumed video for view ${viewIndex} from ${region}`);
+                io.to(socketId).emit('bot_update', { message: `Paused/resumed video for view ${viewIndex} from ${region}` });
+            } else if (action < 0.2) {
+                // 10% chance to adjust volume
+                const volumeKey = Math.random() > 0.5 ? 'ArrowUp' : 'ArrowDown';
+                await page.keyboard.press(volumeKey);
+                console.log(`Adjusted volume for view ${viewIndex} from ${region}`);
+                io.to(socketId).emit('bot_update', { message: `Adjusted volume for view ${viewIndex} from ${region}` });
+            } else if (action < 0.3) {
+                // 10% chance to move mouse
+                const viewport = page.viewport();
+                await humanLikeMouseMovement(page, viewport);
             }
         }
-        return false;
-    } catch (e) {
-        console.log(`Error in custom CAPTCHA blocker for view ${viewIndex}: ${e}`);
-        io.to(socketId).emit('bot_update', { message: `Error in custom CAPTCHA blocker for view ${viewIndex}: ${e}` });
+        
+        return true;
+    } catch (error) {
+        console.log(`Error watching video for view ${viewIndex} from ${region}: ${error}`);
+        io.to(socketId).emit('bot_update', { message: `Error watching video for view ${viewIndex} from ${region}: ${error}` });
         return false;
     }
 }
 
-async function closePopups(page, socketId, viewIndex) {
-    const popupSelectors = [
-        'button[data-e2e="modal-close-inner-button"]',
-        'div[class*="tiktok-modal"] button',
-        'button[aria-label="Close"]',
-        'button[class*="close"]',
-        'div[id*="popup"] button',
-        'div[class*="dialog"] button',
-        'div[class*="cookie-banner"] button',
-        'button[data-e2e="banner-close-button"]',
-        'button[class*="accept"]',
-        'button[class*="decline"]',
-        'button[data-e2e="reject-all"]',
-        'button[aria-label="Dismiss"]'
-    ];
+async function navigateToNextVideos(page, socketId, viewIndex, region, count = 3) {
     try {
-        for (let i = 0; i < 4; i++) {
-            for (const selector of popupSelectors) {
-                const elements = await page.$$(selector);
-                for (const element of elements) {
-                    try {
-                        await element.click({ timeout: 2000 });
-                        console.log(`Closed a pop-up for view ${viewIndex}`);
-                        io.to(socketId).emit('bot_update', { message: `Closed a pop-up for view ${viewIndex}` });
-                        await page.waitForTimeout(Math.floor(Math.random() * 500 + 500));
-                    } catch {}
+        console.log(`Navigating to next ${count} videos for view ${viewIndex} from ${region}`);
+        io.to(socketId).emit('bot_update', { message: `Navigating to next ${count} videos for view ${viewIndex} from ${region}` });
+        
+        for (let i = 0; i < count; i++) {
+            // Scroll down to next video (YouTube Shorts navigation)
+            await page.keyboard.press('ArrowDown');
+            await page.waitForTimeout(getRandomDelay(1000, 2000));
+            
+            // Wait for new video to load
+            await page.waitForTimeout(getRandomDelay(2000, 4000));
+            
+            // Watch this video for a shorter time
+            const shortWatchTime = getRandomDelay(2000, 8000); // 2-8 seconds
+            console.log(`Watching next video ${i+1} for ${(shortWatchTime/1000).toFixed(1)}s for view ${viewIndex} from ${region}`);
+            io.to(socketId).emit('bot_update', { message: `Watching next video ${i+1} for ${(shortWatchTime/1000).toFixed(1)}s for view ${viewIndex} from ${region}` });
+            
+            await page.waitForTimeout(shortWatchTime);
+            
+            // Random human actions
+            const action = Math.random();
+            if (action < 0.15) {
+                // 15% chance to like the video
+                try {
+                    await page.click('button[aria-label*="like"], button[title*="like"], #like-button');
+                    console.log(`Liked video ${i+1} for view ${viewIndex} from ${region}`);
+                    io.to(socketId).emit('bot_update', { message: `Liked video ${i+1} for view ${viewIndex} from ${region}` });
+                } catch (e) {
+                    // Like button not found or not clickable
                 }
+            } else if (action < 0.25) {
+                // 10% chance to scroll comments
+                await humanLikeScroll(page, 'down');
+                await page.waitForTimeout(getRandomDelay(1000, 2000));
+                await humanLikeScroll(page, 'up');
             }
-            await page.waitForTimeout(Math.floor(Math.random() * 1000 + 500));
+            
+            // Take screenshot of current video
+            try {
+                const screenshot = await page.screenshot({ fullPage: false });
+                io.to(socketId).emit('screenshot', { 
+                    image: screenshot.toString('base64'), 
+                    context: `Next video ${i+1} for view ${viewIndex} from ${region}` 
+                });
+            } catch (e) {
+                console.log(`Error capturing screenshot for next video ${i+1}: ${e}`);
+            }
         }
-    } catch (e) {
-        console.log(`Error closing pop-ups for view ${viewIndex}: ${e}`);
-        io.to(socketId).emit('bot_update', { message: `Error closing pop-ups for view ${viewIndex}: ${e}` });
+        
+        return true;
+    } catch (error) {
+        console.log(`Error navigating to next videos for view ${viewIndex} from ${region}: ${error}`);
+        io.to(socketId).emit('bot_update', { message: `Error navigating to next videos for view ${viewIndex} from ${region}: ${error}` });
+        return false;
     }
 }
 
 async function processView(url, viewIndex, totalViews, socketId, browser) {
-    let context, page;
+    let page;
     try {
         const { ua, locale, region } = userAgents[Math.floor(Math.random() * userAgents.length)];
         const isMobile = ua.includes('Mobile') || ua.includes('iPhone') || ua.includes('Android') || ua.includes('iPad');
+        
         const viewport = {
-            width: isMobile ? Math.floor(Math.random() * (414 - 360 + 1)) + 360 : Math.floor(Math.random() * (1920 - 800 + 1)) + 800,
-            height: isMobile ? Math.floor(Math.random() * (896 - 640 + 1)) + 640 : Math.floor(Math.random() * (1080 - 600 + 1)) + 600
+            width: isMobile ? getRandomDelay(360, 414) : getRandomDelay(1200, 1920),
+            height: isMobile ? getRandomDelay(640, 896) : getRandomDelay(800, 1080)
         };
 
-        context = await browser.newContext({
-            userAgent: ua,
-            viewport,
-            deviceScaleFactor: Math.random() * 1.5 + 1,
-            isMobile,
-            hasTouch: isMobile,
-            locale,
-            javaScriptEnabled: true,
-            bypassCSP: true,
-            extraHTTPHeaders: {
-                'Accept-Language': locale,
-                'DNT': '1',
-                'Sec-Fetch-Mode': 'navigate',
-                'Sec-Fetch-Site': 'none',
-                'Sec-Fetch-Dest': 'document',
-                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-                'Accept-Encoding': 'gzip, deflate, br',
-                'Upgrade-Insecure-Requests': '1',
-                'Cache-Control': 'no-cache',
-                'Pragma': 'no-cache'
-            }
+        page = await browser.newPage();
+        
+        // Set user agent and viewport
+        await page.setUserAgent(ua);
+        await page.setViewport(viewport);
+        
+        // Set extra headers
+        await page.setExtraHTTPHeaders({
+            'Accept-Language': locale,
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+            'Accept-Encoding': 'gzip, deflate, br',
+            'DNT': '1',
+            'Upgrade-Insecure-Requests': '1',
+            'Sec-Fetch-Dest': 'document',
+            'Sec-Fetch-Mode': 'navigate',
+            'Sec-Fetch-Site': 'none'
         });
 
-        if (!context) {
-            throw new Error('Failed to create browser context');
-        }
-        console.log(`Context created for view ${viewIndex}/${totalViews} from ${region}`);
-        io.to(socketId).emit('bot_update', { message: `Context created for view ${viewIndex}/${totalViews} from ${region}` });
-
-        await context.addInitScript(`
-            Object.defineProperty(navigator, 'webdriver', { get: () => false });
-            Object.defineProperty(navigator, 'platform', { get: () => '${isMobile ? 'iPhone' : 'Win32'}' });
-            Object.defineProperty(navigator, 'vendor', { get: () => 'Google Inc.' });
-            Object.defineProperty(window, 'chrome', { get: () => ({ runtime: {}, webstore: {} }) });
-            Object.defineProperty(navigator, 'languages', { get: () => ['${locale}', 'en'] });
-            delete window['navigator']['webdriver'];
-            window.navigator.permissions = { query: () => Promise.resolve({ state: 'granted' }) };
-            Object.defineProperty(navigator, 'userAgent', { get: () => '${ua}' });
-            window.screen = {
-                width: ${viewport.width},
-                height: ${viewport.height},
-                availWidth: ${viewport.width},
-                availHeight: ${viewport.height},
-                colorDepth: 24,
-                pixelDepth: 24
-            };
-            HTMLCanvasElement.prototype.getContext = (function(original) {
-                return function() {
-                    const context = original.apply(this, arguments);
-                    const originalGetImageData = context.getImageData;
-                    context.getImageData = function() {
-                        const data = originalGetImageData.apply(this, arguments);
-                        for (let i = 0; i < data.data.length; i++) {
-                            data.data[i] += Math.floor(Math.random() * 10 - 5);
-                        }
-                        return data;
-                    };
-                    return context;
-                };
-            })(HTMLCanvasElement.prototype.getContext);
-            WebGLRenderingContext.prototype.getParameter = (function(original) {
-                return function(param) {
-                    if (param === 37445 || param === 37446) {
-                        return ['Intel Inc.', 'Intel(R) Iris(TM) Graphics 6100'][Math.floor(Math.random() * 2)];
-                    }
-                    return original.apply(this, arguments);
-                };
-            })(WebGLRenderingContext.prototype.getParameter);
-            Object.defineProperty(navigator, 'hardwareConcurrency', { get: () => Math.floor(Math.random() * 4 + 2) });
-            Object.defineProperty(navigator, 'deviceMemory', { get: () => Math.floor(Math.random() * 4 + 4) });
-            Object.defineProperty(navigator, 'plugins', { get: () => [{ name: 'PDF Viewer' }, { name: 'Chrome PDF Viewer' }] });
-            Object.defineProperty(navigator, 'connection', { get: () => ({ type: 'wifi', effectiveType: '4g', rtt: Math.floor(Math.random() * 50 + 50) }) });
-        `);
-
-        await context.clearCookies();
-        await context.clearPermissions();
-
-        page = await context.newPage();
-        if (!page) {
-            throw new Error('Failed to create new page');
-        }
-        console.log(`Page created for view ${viewIndex}/${totalViews} from ${region}`);
-        io.to(socketId).emit('bot_update', { message: `Page created for view ${viewIndex}/${totalViews} from ${region}` });
-
-        let pageLoaded = false;
-        let responseStatus, pageTitle;
-        for (let attempt = 0; attempt < 5; attempt++) {
-            try {
-                const timeout = 120000; // 120s
-                const response = await page.goto(url, { waitUntil: 'domcontentloaded', timeout });
-                responseStatus = response ? response.status() : 'No response';
-                pageTitle = await page.title().catch(() => 'Unknown title');
-                if (response && response.status() >= 400) {
-                    console.log(`HTTP error ${response.status()} on attempt ${attempt+1} for view ${viewIndex} from ${region}, title: ${pageTitle}`);
-                    io.to(socketId).emit('bot_update', { message: `HTTP error ${response.status()} on attempt ${attempt+1} for view ${viewIndex} from ${region}, title: ${pageTitle}` });
-                    if (response.status() === 404 || response.status() === 403) {
-                        throw new Error('Video not available or restricted');
-                    }
-                    try {
-                        const screenshot = await page.screenshot({ fullPage: false });
-                        io.to(socketId).emit('screenshot', { image: screenshot.toString('base64'), context: `HTTP error ${response.status()} for view ${viewIndex}` });
-                    } catch {}
-                    continue;
-                }
-                pageLoaded = true;
-                console.log(`Video page loaded successfully for view ${viewIndex}/${totalViews} from ${region}, status: ${responseStatus}, title: ${pageTitle}`);
-                io.to(socketId).emit('bot_update', { message: `Video page loaded successfully for view ${viewIndex}/${totalViews} from ${region}, status: ${responseStatus}, title: ${pageTitle}` });
-                break;
-            } catch (e) {
-                console.log(`Navigation error on attempt ${attempt+1} for view ${viewIndex} from ${region}: ${e}`);
-                io.to(socketId).emit('bot_update', { message: `Navigation error on attempt ${attempt+1} for view ${viewIndex} from ${region}: ${e}` });
-                try {
-                    const screenshot = await page.screenshot({ fullPage: false });
-                    io.to(socketId).emit('screenshot', { image: screenshot.toString('base64'), context: `Navigation error for view ${viewIndex}` });
-                } catch {}
-                if (attempt === 4) throw e;
-                await page.waitForTimeout(Math.pow(2, attempt) * 3000 + Math.random() * 1000); // Exponential backoff
-            }
-        }
-
-        if (!pageLoaded) {
-            console.log(`Failed to load video page for view ${viewIndex}/${totalViews} from ${region} after retries`);
-            io.to(socketId).emit('bot_update', { message: `Failed to load video page for view ${viewIndex}/${totalViews} from ${region} after retries` });
-            return;
-        }
-
-        const errorMessage = await page.$('div[class*="error"],h1,h2,h3,p[class*="not-found"],div[class*="unavailable"]');
-        if (errorMessage) {
-            const text = await errorMessage.innerText();
-            if (text.toLowerCase().includes('not available') || text.toLowerCase().includes('not found') || text.toLowerCase().includes('unavailable')) {
-                console.log(`Error: Video not available for view ${viewIndex}/${totalViews} from ${region}, message: ${text}`);
-                io.to(socketId).emit('bot_update', { message: `Error: Video not available for view ${viewIndex}/${totalViews} from ${region}, message: ${text}` });
-                return;
-            }
-        }
-
-        if (await customCaptchaBlocker(page, socketId, viewIndex)) {
-            console.log(`Skipping view ${viewIndex}/${totalViews} from ${region} due to unresolved CAPTCHA`);
-            io.to(socketId).emit('bot_update', { message: `Skipping view ${viewIndex}/${totalViews} from ${region} due to unresolved CAPTCHA` });
-            return;
-        }
-
-        await closePopups(page, socketId, viewIndex);
-        await page.waitForTimeout(Math.floor(Math.random() * 1000 + 500)); // 0.5-1.5s delay
-
-        try {
-            const screenshot = await page.screenshot({ fullPage: false });
-            io.to(socketId).emit('screenshot', { image: screenshot.toString('base64'), context: `Initial video page for view ${viewIndex} from ${region}` });
-        } catch (e) {
-            console.log(`Error capturing initial screenshot for view ${viewIndex}/${totalViews} from ${region}: ${e}`);
-            io.to(socketId).emit('bot_update', { message: `Error capturing initial screenshot for view ${viewIndex}/${totalViews} from ${region}: ${e}` });
-        }
-
-        let viewed = false;
-        for (let attempt = 0; attempt < 3; attempt++) {
-            try {
-                const videoElement = await page.$('video, div[data-e2e="video-player"]');
-                if (videoElement) {
-                    const boundingBox = await videoElement.boundingBox();
-                    if (boundingBox) {
-                        await page.mouse.move(
-                            boundingBox.x + boundingBox.width / 2 + Math.random() * 10 - 5,
-                            boundingBox.y + boundingBox.height / 2 + Math.random() * 10 - 5,
-                            { steps: 15 }
-                        );
-                        await page.waitForTimeout(Math.floor(Math.random() * 400 + 200)); // 0.2-0.6s
-                        // Ensure video plays for 5-10s
-                        const playDuration = Math.floor(Math.random() * 5000 + 5000); // 5-10s
-                        await page.waitForTimeout(playDuration);
-                        console.log(`Video played for ${playDuration/1000}s for view ${viewIndex}/${totalViews} from ${region}`);
-                        io.to(socketId).emit('bot_update', { message: `Video played for ${playDuration/1000}s for view ${viewIndex}/${totalViews} from ${region}` });
-                        viewed = true;
-
-                        // Screenshot 3 seconds after video load
-                        await page.waitForTimeout(3000);
-                        try {
-                            const screenshot = await page.screenshot({ fullPage: false });
-                            io.to(socketId).emit('screenshot', { image: screenshot.toString('base64'), context: `3 seconds after video load for view ${viewIndex} from ${region}` });
-                            console.log(`Captured screenshot 3 seconds after video load for view ${viewIndex}/${totalViews} from ${region}`);
-                            io.to(socketId).emit('bot_update', { message: `Captured screenshot 3 seconds after video load for view ${viewIndex}/${totalViews} from ${region}` });
-                        } catch (e) {
-                            console.log(`Error capturing 3-second screenshot for view ${viewIndex}/${totalViews} from ${region}: ${e}`);
-                            io.to(socketId).emit('bot_update', { message: `Error capturing 3-second screenshot for view ${viewIndex}/${totalViews} from ${region}: ${e}` });
-                        }
-                        break;
-                    }
-                } else {
-                    console.log(`Video element not found for view ${viewIndex}/${totalViews} from ${region}, attempt ${attempt+1}`);
-                    io.to(socketId).emit('bot_update', { message: `Video element not found for view ${viewIndex}/${totalViews} from ${region}, attempt ${attempt+1}` });
-                }
-            } catch (e) {
-                console.log(`Error playing video for view ${viewIndex}/${totalViews} from ${region}, attempt ${attempt+1}: ${e}`);
-                io.to(socketId).emit('bot_update', { message: `Error playing video for view ${viewIndex}/${totalViews} from ${region}, attempt ${attempt+1}: ${e}` });
-            }
-            await page.waitForTimeout(Math.floor(Math.random() * 1500 + 500)); // 0.5-2s
-        }
-
-        if (!viewed) {
-            console.log(`Skipping view ${viewIndex}/${totalViews} from ${region} due to persistent video load failure`);
-            io.to(socketId).emit('bot_update', { message: `Skipping view ${viewIndex}/${totalViews} from ${region} due to persistent video load failure` });
-            return;
-        }
-
-        // Human-like behavior
-        for (let j = 0; j < Math.floor(Math.random() * 3 + 2); j++) {
-            const scrollDistance = Math.floor(Math.random() * 400 + 100);
-            await page.evaluate(`window.scrollBy(0, ${scrollDistance * (Math.random() > 0.5 ? 1 : -1)})`);
-            await page.waitForTimeout(Math.floor(Math.random() * 1500 + 1000)); // 1-2.5s
-        }
-
-        for (let j = 0; j < Math.floor(Math.random() * 3 + 2); j++) {
-            const x = Math.floor(Math.random() * viewport.width * 0.8 + viewport.width * 0.1);
-            const y = Math.floor(Math.random() * viewport.height * 0.8 + viewport.height * 0.1);
-            await page.mouse.move(x, y, { steps: Math.floor(Math.random() * 15 + 10) });
-            await page.waitForTimeout(Math.floor(Math.random() * 600 + 400)); // 0.4-1s
-        }
-
-        if (Math.random() < 0.3) {
-            await page.mouse.click(
-                Math.floor(Math.random() * viewport.width * 0.8 + viewport.width * 0.1),
-                Math.floor(Math.random() * viewport.height * 0.8 + viewport.height * 0.1)
+        // Anti-detection measures
+        await page.evaluateOnNewDocumentPreload(() => {
+            Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+            Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
+            Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
+            window.chrome = { runtime: {} };
+            
+            // Override permissions
+            const originalQuery = window.navigator.permissions.query;
+            window.navigator.permissions.query = (parameters) => (
+                parameters.name === 'notifications' ?
+                    Promise.resolve({ state: Notification.permission }) :
+                    originalQuery(parameters)
             );
-            console.log(`Random click performed for view ${viewIndex}/${totalViews} from ${region}`);
-            io.to(socketId).emit('bot_update', { message: `Random click performed for view ${viewIndex}/${totalViews} from ${region}` });
+        });
+
+        console.log(`Starting view ${viewIndex}/${totalViews} from ${region}`);
+        io.to(socketId).emit('bot_update', { message: `Starting view ${viewIndex}/${totalViews} from ${region}` });
+
+        // Navigate to the video with realistic loading time
+        const response = await page.goto(url, { 
+            waitUntil: 'networkidle2', 
+            timeout: 30000 
+        });
+        
+        if (!response || response.status() >= 400) {
+            throw new Error(`Failed to load page: ${response ? response.status() : 'No response'}`);
         }
 
-        console.log(`Registered view ${viewIndex}/${totalViews} from ${region} for ${url}`);
-        io.to(socketId).emit('bot_update', { message: `Registered view ${viewIndex}/${totalViews} from ${region} for ${url}` });
+        console.log(`Page loaded successfully for view ${viewIndex}/${totalViews} from ${region}`);
+        io.to(socketId).emit('bot_update', { message: `Page loaded successfully for view ${viewIndex}/${totalViews} from ${region}` });
 
+        // Wait for page to fully load
+        await page.waitForTimeout(getRandomDelay(2000, 4000));
+
+        // Handle cookie consent and popups
+        try {
+            const cookieButton = await page.$('button[aria-label*="Accept"], button[aria-label*="consent"], button:contains("Accept all")');
+            if (cookieButton) {
+                await cookieButton.click();
+                await page.waitForTimeout(1000);
+                console.log(`Accepted cookies for view ${viewIndex} from ${region}`);
+                io.to(socketId).emit('bot_update', { message: `Accepted cookies for view ${viewIndex} from ${region}` });
+            }
+        } catch (e) {
+            // No cookie popup found
+        }
+
+        // Take initial screenshot
         try {
             const screenshot = await page.screenshot({ fullPage: false });
-            io.to(socketId).emit('screenshot', { image: screenshot.toString('base64'), context: `Final video page for view ${viewIndex} from ${region}` });
+            io.to(socketId).emit('screenshot', { 
+                image: screenshot.toString('base64'), 
+                context: `Initial page load for view ${viewIndex} from ${region}` 
+            });
         } catch (e) {
-            console.log(`Error capturing final screenshot for view ${viewIndex}/${totalViews} from ${region}: ${e}`);
-            io.to(socketId).emit('bot_update', { message: `Error capturing final screenshot for view ${viewIndex}/${totalViews} from ${region}: ${e}` });
+            console.log(`Error capturing initial screenshot: ${e}`);
         }
 
-    } catch (e) {
-        console.log(`Error on view ${viewIndex}/${totalViews} from ${region}: ${e}`);
-        io.to(socketId).emit('bot_update', { message: `Error on view ${viewIndex}/${totalViews} from ${region}: ${e}` });
+        // Watch the main video
+        const videoWatched = await watchVideo(page, socketId, viewIndex, region);
+        
+        if (!videoWatched) {
+            console.log(`Failed to watch video for view ${viewIndex} from ${region}`);
+            io.to(socketId).emit('bot_update', { message: `Failed to watch video for view ${viewIndex} from ${region}` });
+            return;
+        }
+
+        // Navigate and watch next few videos
+        await navigateToNextVideos(page, socketId, viewIndex, region, getRandomDelay(2, 4));
+
+        // Final human-like actions
+        const viewport_final = page.viewport();
+        await humanLikeMouseMovement(page, viewport_final);
+        await page.waitForTimeout(getRandomDelay(1000, 3000));
+
+        console.log(`Successfully completed view ${viewIndex}/${totalViews} from ${region}`);
+        io.to(socketId).emit('bot_update', { message: `Successfully completed view ${viewIndex}/${totalViews} from ${region}` });
+
+        // Final screenshot
+        try {
+            const screenshot = await page.screenshot({ fullPage: false });
+            io.to(socketId).emit('screenshot', { 
+                image: screenshot.toString('base64'), 
+                context: `Final state for view ${viewIndex} from ${region}` 
+            });
+        } catch (e) {
+            console.log(`Error capturing final screenshot: ${e}`);
+        }
+
+    } catch (error) {
+        console.log(`Error processing view ${viewIndex}/${totalViews} from ${region}: ${error}`);
+        io.to(socketId).emit('bot_update', { message: `Error processing view ${viewIndex}/${totalViews} from ${region}: ${error}` });
     } finally {
-        if (page) await page.close().catch(e => console.log(`Error closing page: ${e}`));
-        if (context) await context.close().catch(e => console.log(`Error closing context: ${e}`));
+        if (page) {
+            await page.close().catch(e => console.log(`Error closing page: ${e}`));
+        }
     }
 }
 
 async function runViewBot(url, views, socketId) {
     const normalizedUrl = normalizeUrl(url);
-    if (!normalizedUrl.match(/https:\/\/www\.tiktok\.com\/@[\w.]+\/video\/\d+/)) {
-        io.to(socketId).emit('bot_update', { message: 'Invalid URL. Only TikTok video URLs (@username/video/ID) are supported.' });
+    
+    // Validate YouTube Shorts URL
+    if (!normalizedUrl.includes('youtube.com/shorts/')) {
+        io.to(socketId).emit('bot_update', { message: 'Invalid URL. Only YouTube Shorts URLs are supported.' });
         return;
     }
+
     let browser;
     try {
-        browser = await chromium.launch({ headless: true, args: ['--no-sandbox', '--disable-dev-shm-usage', '--disable-blink-features=AutomationControlled'] });
+        // Launch browser with realistic settings
+        browser = await puppeteer.launch({
+            headless: false, // Set to true for production
+            args: [
+                '--no-sandbox',
+                '--disable-setuid-sandbox',
+                '--disable-dev-shm-usage',
+                '--disable-accelerated-2d-canvas',
+                '--no-first-run',
+                '--no-zygote',
+                '--disable-gpu',
+                '--disable-background-timer-throttling',
+                '--disable-backgrounding-occluded-windows',
+                '--disable-renderer-backgrounding'
+            ],
+            defaultViewport: null
+        });
+
         console.log('Browser launched successfully');
         io.to(socketId).emit('bot_update', { message: 'Browser launched successfully' });
 
-        const maxConcurrent = 1; // Sequential to avoid detection
-        for (let i = 0; i < Math.min(views, 1000); i++) {
+        // Process views sequentially to avoid detection
+        for (let i = 0; i < Math.min(views, 100); i++) { // Limit to 100 views for safety
             await processView(normalizedUrl, i + 1, views, socketId, browser);
-            await new Promise(resolve => setTimeout(resolve, Math.floor(Math.random() * 2000 + 1000))); // 1-3s delay between views
+            
+            // Random delay between views (30 seconds to 2 minutes)
+            const delay = getRandomDelay(30000, 120000);
+            console.log(`Waiting ${(delay/1000).toFixed(0)}s before next view...`);
+            io.to(socketId).emit('bot_update', { message: `Waiting ${(delay/1000).toFixed(0)}s before next view...` });
+            await new Promise(resolve => setTimeout(resolve, delay));
         }
 
-        console.log('Bot finished');
-        io.to(socketId).emit('bot_update', { message: 'Bot finished' });
-    } catch (e) {
-        console.log(`Bot error: ${e}`);
-        io.to(socketId).emit('bot_update', { message: `Bot error: ${e}` });
+        console.log('Bot completed successfully');
+        io.to(socketId).emit('bot_update', { message: 'Bot completed successfully' });
+
+    } catch (error) {
+        console.log(`Bot error: ${error}`);
+        io.to(socketId).emit('bot_update', { message: `Bot error: ${error}` });
     } finally {
-        if (browser) await browser.close().catch(e => console.log(`Error closing browser: ${e}`));
+        if (browser) {
+            await browser.close().catch(e => console.log(`Error closing browser: ${e}`));
+        }
     }
 }
 
@@ -414,16 +390,20 @@ app.get('/', (req, res) => {
 app.post('/start', async (req, res) => {
     let { url, views, socketId } = req.body;
     url = normalizeUrl(url);
-    if (!url.match(/https:\/\/www\.tiktok\.com\/@[\w.]+\/video\/\d+/)) {
-        return res.status(400).json({ error: 'Invalid URL. Only TikTok video (@username/video/ID) URLs are supported' });
+    
+    if (!url.includes('youtube.com/shorts/')) {
+        return res.status(400).json({ error: 'Invalid URL. Only YouTube Shorts URLs are supported' });
     }
-    if (!Number.isInteger(views) || views < 1 || views > 1000) {
-        return res.status(400).json({ error: 'Views must be between 1 and 1000' });
+    
+    if (!Number.isInteger(views) || views < 1 || views > 100) {
+        return res.status(400).json({ error: 'Views must be between 1 and 100' });
     }
+    
     runViewBot(url, views, socketId).catch(e => {
         console.log(`Bot error: ${e}`);
         io.to(socketId).emit('bot_update', { message: `Bot error: ${e}` });
     });
+    
     res.status(200).json({ message: 'Bot started' });
 });
 

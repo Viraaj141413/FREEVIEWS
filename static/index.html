@@ -111,10 +111,10 @@
 </head>
 <body>
     <div class="container">
-        <h1>TikTok View Bot</h1>
-        <p>Enter a TikTok video URL and number of views (1-1000).</p>
-        <input type="text" id="url" placeholder="TikTok Video URL" required>
-        <input type="number" id="views" placeholder="Number of Views (1-1000)" min="1" max="1000" required>
+        <h1>YouTube Shorts View Bot</h1>
+        <p>Enter a YouTube Shorts URL and number of views (1-100).</p>
+        <input type="text" id="url" placeholder="YouTube Shorts URL (e.g., https://youtube.com/shorts/VIDEO_ID)" required>
+        <input type="number" id="views" placeholder="Number of Views (1-100)" min="1" max="100" required>
         <button id="start">Start Bot</button>
         <div id="error" class="error"></div>
         <div id="status"></div>
@@ -135,12 +135,12 @@
             const url = urlInput.value.trim();
             const views = parseInt(viewsInput.value);
 
-            if (!url.startsWith('https://www.tiktok.com/')) {
-                errorDiv.textContent = 'Please enter a valid TikTok URL starting with https://www.tiktok.com/';
+            if (!url.includes('youtube.com') && !url.includes('youtu.be')) {
+                errorDiv.textContent = 'Please enter a valid YouTube URL (Shorts, regular video, or youtu.be link)';
                 return;
             }
-            if (isNaN(views) || views < 1 || views > 1000) {
-                errorDiv.textContent = 'Views must be between 1 and 1000';
+            if (isNaN(views) || views < 1 || views > 100) {
+                errorDiv.textContent = 'Views must be between 1 and 100';
                 return;
             }
 
